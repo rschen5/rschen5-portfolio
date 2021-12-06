@@ -1,0 +1,423 @@
+---
+title: "Carbon Dioxide Emissions Linear Regression Model"
+author: "Rachel Chen, Emily Esterline, Ana Iglesias"
+date: "12/01/2019"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse);library(corrplot);library(leaps);library(lmtest);library(car);library(ggpubr)
+
+setwd("./data")
+env <- read.csv("enviro_tall.csv",header=TRUE)
+econ <- read.csv("econ_tall.csv", header=TRUE)
+health <- read.csv("health_tall.csv", header=TRUE)
+
+data <- data.frame(env$Country_Name,       env$year,              env$EN_ATM_CO2E_KT,
+                   econ$NY_GDP_PCAP_PP_KD, env$EG_EGY_PRIM_PP_KD, env$EG_ELC_ACCS_ZS,
+                   env$AG_LND_AGRI_ZS,     health$SP_POP_TOTL,    env$EN_ATM_METH_KT_CE,
+                   env$EN_ATM_NOXE_KT_CE,  env$EN_ATM_GHGO_KT_CE, env$AG_LND_FRST_K2)
+names(data) <- c("Country",  "Year",          "CO2_kt",
+                 "GDP",      "Energy_Intens", "Elec_Access",
+                 "Agr_Land", "Pop",           "Methane",
+                 "NOXE",     "Greenhouse",    "Forest_Area")
+```
+
+## Motivation and Goals
+As global warming is an urgent threat to human survival, it is important to understand the causes of rising CO2 emissions, a prominent source of global warming and climate change. The objective of this project is to analyze the relationship of CO2 emissions with several factors known or thought to be linked to CO2 emissions. Humans are responsible for almost all impacts of rising CO2 emissions. Thus, we can derive actionable insights from this analysis.
+
+
+## Data Set
+This analysis uses data from the [World Bank database](http://data.worldbank.org), which contains data on areas such as finance, health, and population to measure the development of nations over time. We utilized a cleaned version of the database previously used by a group member. The cleaned database contains 11 data sets with 536 total variables for 220 nations from 1989-2018. Each data set contains a category of variables, such as Environment, Education, or Economics.
+
+After background research, we selected nine variables most thought to influence CO2 emissions from which to build a model. Given the large size of the database, we used data for only one year and a random sample of 154 (70% of total) nations. We chose the year 2011, which had the least missing data.  
+
+Below are brief descriptions of variables, all of which are numerical. For more details, see Appendix.
+
+- **CO2_kt (Dependent variable)** - Carbon dioxide emissions (kilotons)
+- **GDP** - GDP per capita, purchasing power parity (PPP GDP) (constant 2017 international $)
+- **Energy_Intens** - Energy intensity level of primary energy (MJ/$2011 PPP GDP)
+- **Elec_Access** - Access to electricity (% of population)
+- **Agr_Land** - Agricultural land (% of land area)
+- **Pop** - Total population
+- **Methane** - Methane emissions (kilotons of CO2 equivalent)
+- **NOXE** - Nitrous oxide emissions (thousand metric tons of CO2 equivalent)
+- **Greenhouse** - Other greenhouse gas emissions (thousand metric tons of CO2 equivalent)
+- **Forest_Area** - Forest area (sq. kilometers)
+
+```{r filter, warning=FALSE, include=FALSE}
+miss <- data %>% group_by(Year) %>% summarise_each(funs(sum(is.na(.)))) %>%
+  transmute(Year, sumNA = rowSums(.[-1])) %>% arrange(sumNA)
+print(paste("Year to use:", miss$Year[1]))
+data_2011 <- data %>% filter(Year==miss$Year[1]) %>% select(CO2_kt:Forest_Area)
+data_2011 <- na.omit(data_2011)
+```
+
+
+## Exploratory Visualizations
+
+We graphically explore our data set to examine relationships between variables. First, we visualize the relationship between each predictor variable and the response variable via scatterplots. We also examine the distributions of the predictor variables via boxplots. We then produce scatterplot and correlation matrices to examine pairwise relationships and correlations between all variables.
+
+Aside from Agr_Land, whose distribution appears Normal, the predictor variable distributions appear skewed. The distribution for Elec_Access is skewed to the left, and the rest are skewed to the right. Therefore, we may have to transform variables to fit the normality assumption while building a regression model.
+
+The Pop, Methane, and NOXE variables display a strong positive correlation with CO2 emissions, while Forest_Area has a moderate positive correlation with CO2 emissions. These relationships are also supported in the scatterplots. Additionally, the predictor variable pairs of Pop-Methane, Pop-NOXE, Methane-NOXE, Greenhouse-Forest_Area, Methane-Forest_Area, and GDP-Elec_Access, appear to be positively correlated. This makes sense, as a larger population will consume more resources and release larger amounts of greenhouse gases. Also if a nation produces high amounts of a greenhouse gas, it is likely to produce high amounts of other greenhouse gases. In addition, GDP is an indicator of a nation's development status, and more developed nations tend to have more stable access to resources like electricity. Furthermore, there are moderate negative correlations between Energy_Intens and Elec_Access, as well as GDP and Agr_Land.  
+    
+
+```{r scatterplot, echo=FALSE, fig.height=6}
+cols <- c("GDP","Energy_Intens","Elec_Access","Agr_Land","Pop",
+          "Methane","NOXE","Greenhouse","Forest_Area")
+plot_scatter = list()
+for (i in 1:length(cols)) {
+  p <- ggplot(data=data_2011, aes_string(x=cols[[i]][1],y=data_2011$CO2_kt)) +
+    geom_point() + geom_smooth(method = "loess", formula = y ~ x) +
+    labs(x=cols[[i]][1], y="CO2_kt")
+  if (i %% 3 != 1) {
+    p <- p + theme(axis.text.y = element_blank(),
+                   axis.ticks.y = element_blank(),
+                   axis.title.y = element_blank())
+  }
+  plot_scatter[[i]] <- p
+}
+grid_scatter <- ggarrange(plotlist=plot_scatter, widths = c(3,3))#, labels = cols)
+annotate_figure(grid_scatter, top=text_grob("Scatterplots", face="bold", size=12))
+```
+
+```{r boxplot, echo=FALSE, fig.height=8, fig.align="center"}
+cols <- c("GDP","Energy_Intens","Elec_Access","Agr_Land","Pop",
+          "Methane","NOXE","Greenhouse","Forest_Area")
+plot_boxplot = list()
+for (i in 1:length(cols)) {
+  p <- ggplot(data=data_2011, aes_string(y=cols[[i]][1])) +
+    geom_boxplot() + labs(x="", y=cols[[i]][1])
+  plot_boxplot[[i]] <- p
+}
+grid_box <- ggarrange(plotlist=plot_boxplot, widths = c(3,3))#, labels = cols)
+annotate_figure(grid_box, top=text_grob("Boxplots", face="bold", size=12))
+```
+
+```{r scatterplot matrix, echo=FALSE, fig.height=4.65}
+pairs(data_2011, main="Scatterplot Matrix", cex.labels=0.6, lower.panel=NULL)
+```
+
+```{r corr matrix, echo=FALSE, fig.height=4.25, fig.align="center"}
+corrplot(cor(data_2011, use="complete"), type = "upper", diag = FALSE, outline = TRUE,
+         tl.col = "black", tl.cex = 0.75, tl.srt = 45, bg="lightgray", 
+         title="Correlation Matrix", mar=c(0,0,1,0))
+```
+
+
+## Model Building 
+
+We start by building a full linear regression model, with all variables.  
+
+```{r full model}
+full_model <- lm(CO2_kt ~ ., data=data_2011)
+summary(full_model); anova(full_model)
+```
+
+We perform residual diagnostics to test whether any of the assumptions are violated. A residual plot suggests that the relationship is nonlinear and has non-constant variance, since the residuals do not bounce randomly around the Residual=0 line. There also may be outliers.     
+```{r residual plot, echo=FALSE, fig.height=3.2, fig.width=4.25, fig.align="center"}
+plot(full_model$fitted.values, full_model$residuals, main="Residual Plot For Full Model",
+     xlab="Fitted values", ylab="Residuals", pch=16, cex=1)
+abline(h=0)
+```
+
+To test for constant variance, we conduct the Breusch-Pagan test, in which we reject the null hypothesis of constant error variance and conclude non-constant error variance.
+```{r bp testfull model}
+bptest(full_model, studentize=FALSE)
+```
+
+To test for outliers, we examine a standardized residual plot. Marked in red are the values with standardized residuals greater than 2 or less than -2. We flag these as possible outliers that could be removed.  
+```{r stand resid full model, fig.height=3.2, fig.width=4.25, fig.align="center", echo=FALSE}
+standres = rstandard(full_model) 
+y <- full_model$fitted.values
+plot(y, standres, col=ifelse(standres<(-2), "red", ifelse(standres>2, "red", "black")),
+     main="Standardized Residual Plot For Full Model",
+     xlab="Fitted values", ylab="Standardized residuals", pch=16, cex=1)
+abline(h=0); abline(h=2); abline(h=-2)
+```
+
+To test for the assumption of normality of error terms, we produce a Q-Q plot. We observe that this does not reflect normality.   
+```{r qq plot full model, echo=FALSE, fig.height=3.2, fig.width=4.25, fig.align="center"}
+qqnorm(full_model$residuals, main="Normal Q-Q Plot For Full Model", pch=16, cex=1) 
+qqline(full_model$residuals) 
+```
+
+To investigate further we conduct the Shapiro-Wilk test, in which we reject the null hypothesis that random error comes from the normal distribution and conclude that the error terms are not normally distributed. 
+```{r sw test full model}
+shapiro.test(full_model$residuals)
+```
+
+Finally, to test for independence of error terms, we produce an index plot. Since there appears to be a horizontal band bouncing randomly around 0, we *could* have indepdence of error terms. 
+```{r index plot full model, echo=FALSE, fig.height=3.2, fig.width=4.25, fig.align="center"}
+row <- row(data_2011, as.factor=FALSE)
+plot(row[,1], full_model$residuals, xlab="Index", ylab="Residuals",
+     main="Index Plot For Full Model", pch=16, cex=1)
+abline(h=0)
+```
+
+To confirm, we conduct the Durbin-Watson test for independence of error terms, in which we fail to reject the null hypothesis of uncorrelated errors over time and conclude that error terms *are* independent.  
+```{r dw test full model}
+dwtest(full_model, data=data_2011)
+```
+
+The full model fails tests of linearity, constant error variance, and normality of error terms, and it has outliers. Since we have issues with non-linearity AND non-normality/non-constant varriance, we must transform both X and Y.  
+
+## Transforming Variables
+
+Transforming Y first, we attempt a BoxCox transformation.  
+```{r y boxcox}
+boxCox(full_model, family="yjPower", plotit = TRUE, lambda = seq(0, .2, 0.05))
+CO2_kt.trans <- yjPower(data_2011$CO2_kt, .1)
+data_2011$CO2_kt.trans <- as.numeric(CO2_kt.trans)
+data_2011_transY <- data_2011 %>% select(CO2_kt.trans, GDP, Energy_Intens, Elec_Access,
+                                         Agr_Land, Pop, Methane, NOXE, Greenhouse, Forest_Area)
+```
+
+We choose the lambda value of 0.10, and investigate if our model has improved.   
+```{r transYfull}
+transY_full <- lm(CO2_kt.trans~.,data=data_2011_transY)
+summary(transY_full); anova(transY_full)
+```
+
+We recheck the assumptions of linear regression to see if any assumptions are now met that were not in the full model.  
+```{r residual plot transformed y, echo=FALSE, fig.height=3.2, fig.width=4.25, fig.align="center"}
+plot(transY_full$fitted.values, transY_full$residuals,
+     main="Residual Plot Transformed Y Full Model", xlab="Fitted values", ylab="Residuals",
+     pch=16, cex=1)
+abline(h=0)
+```
+
+The residual plot seems to be more of an even scatter than our previous one. However, we notice what could be some "funneling", which might indicate non-constant error variance. Addiitonally, there might still be outliers, reflected by some values that "stand out" from the rest in this plot. We investigate further.  
+
+To test for equal error variance, we conduct the Breusch-Pagan test, in which we reject the null hypothesis and conclude that error variance is still unequal. 
+```{r bp test transformed y}
+bptest(transY_full, studentize=FALSE)
+```
+
+Looking next at outliers, we produce a standardized residual plot. We still have several outliers, values with standardized residuals greater than 2 or less than -2. We could, if we choose, investigate these further to determine if they could be removed.   
+```{r stand resid transformed y, echo=FALSE, fig.height=3.2, fig.width=4.25, fig.align="center"}
+standres = rstandard(transY_full) 
+y <- transY_full$fitted.values
+plot(y, standres, col=ifelse(standres<(-2), "red", ifelse(standres>2, "red", "black")),
+     main="Standardized Residual Plot Transformed Y Full Model", xlab="Fitted values",
+     ylab="Standardized residuals", pch=16, cex=1, cex.main=0.85)
+abline(h=0); abline(h=2); abline(h=-2)
+```
+
+Looking at normality of error terms, we produce a Q-Q plot for the transformed Y model. We observe that this Q-Q plot looks more normal than our previous model, with minimal skew at the ends.
+```{r qq plot transformed y, echo=FALSE, fig.height=3.2, fig.width=4.25, fig.align="center"}
+qqnorm(transY_full$residuals, main="Normal Q-Q Plot Transformed Y Full Model", pch=16,
+       cex=1, cex.main=1) 
+qqline(transY_full$residuals) 
+```
+
+To check, we conduct the Shapiro-Wilk test for normality. Since the p-value is greater than the significance level 0.05, we fail to reject the null hypothesis that random error is from the normal distribution, and conclude the null hypothesis is true. Therefore the normality assumption is **met.** 
+```{r sw test transformed y}
+shapiro.test(transY_full$residuals)
+```
+
+Finally, investigating into independence of error terms, we first look at an index plot. The index plot appears to have a horizontal band bouncing randomly around 0, which would imply independence of error terms.
+```{r index plot transformed y, echo=FALSE, fig.height=3.2, fig.width=4.25, fig.align="center"}
+row <- row(data_2011_transY,as.factor=FALSE)
+plot(row[,1], transY_full$residuals, xlab="Index", ylab="Residuals",
+     main="Index Plot Transformed Y Full Model", pch=16, cex=1)
+abline(h=0)
+```
+
+To check, we conduct the Durbin-Watson test. We fail to reject the null hypothesis of uncorrelated errors over time and conclude that it is true. Thus the independence assumption is met.  
+```{r dw test transformed y}
+dwtest(transY_full, data=data_2011_transY)
+```
+
+To summarize, our boxcox-transformed y model now only fails linearity and constant variance.  
+We now attempt to transform X.
+
+We first examine the correlations between the transformed response variable and the predictor variables under the following transformations:
+```{r corrs, warning=FALSE, echo=FALSE}
+untransformed <- cor(data_2011,y=CO2_kt.trans)
+logtransformed <- cor(log(data_2011),y=CO2_kt.trans,use="complete.obs")
+squared <- cor(data_2011^2,y=CO2_kt.trans,use="complete.obs")
+cubed <- cor(data_2011^3,y=CO2_kt.trans,use="complete.obs")
+
+corrs <- cbind(untransformed, logtransformed, squared, cubed)
+colnames(corrs) <- c("Untransformed", "Log-transformed", "Squared", "Cubed")
+corrs
+```
+
+We see that the log transformation gives the highest correlations for all predictor variables except for Agr_Land, Elec_Access, and Energy_Intens. We choose to log-transform all predictor variables with the exception of the aforementioned three variables, which we leave untransformed.
+```{r transform x, warning=F}
+data_2011$forest_area.trans <- as.numeric(log(data_2011$Forest_Area))
+data_2011$greenhouse.trans <- as.numeric(log(data_2011$Greenhouse))
+data_2011$noxe.trans <- as.numeric(log(data_2011$NOXE))
+data_2011$methane.trans <- as.numeric(log(data_2011$Methane))
+data_2011$pop.trans <- as.numeric(log(data_2011$Pop))
+data_2011$gdp.trans <- as.numeric(log(data_2011$GDP))
+data_2011_transX <- data_2011 %>%
+  select(CO2_kt.trans, gdp.trans,	Energy_Intens, Elec_Access, Agr_Land,	pop.trans,
+         methane.trans,	noxe.trans,	greenhouse.trans, forest_area.trans)
+data_2011_transX <- na.omit(data_2011_transX)
+```
+
+Now we fit a model on the transformed data and check the model assumptions.
+```{r transform x model}
+transX_full <- lm(CO2_kt.trans~.,data=data_2011_transX)
+summary(transX_full); anova(transX_full)
+```
+```{r transform x model plot, echo=FALSE, fig.height=3.22, fig.width=4.25, fig.align="center"}
+plot(transX_full$fitted.values,	transX_full$residuals,
+     main="Residual Plot Transformed X and Y Full Model", xlab="Fitted values",
+     ylab="Residuals", pch=16, cex=1)
+abline(h=0)
+```
+
+In the residual plot, the residuals do not suggest a linear model. They follow a pattern gradually curving down from fitted values of 0 to approximately 18 kt, then rapidly curving back up. The residuals are not in a horizontal random scattered pattern along the Residuals=0 line. There may be outliers as well, as there are a few residuals that deviate slightly from the curved pattern of the rest of the residuals. The residuals have a fairly consistent spread among themselves but we see a slight funneling effect as the fitted values reach 25-30 kt.
+
+To investigate further we look at the Breusch-Pagan test. We reject the null hypothesis of constant variance among residuals and therefore conclude that there is not constant variance.
+```{r transform x bp}
+bptest(transX_full, studentize=FALSE)
+```
+
+From the standardized residual plot we see that there are several outliers in the residuals. These are more than likely contributing to the difficulty of our proposed model to meet assumptions, so removing them could prove otherwise. However,the observations that are not outliers still follow the curved pattern in the residual plot.
+```{r transform x outlier, echo=FALSE, fig.height=3.22, fig.width=4.25, fig.align="center"}
+standres = rstandard(transX_full)
+y <- transX_full$fitted.values
+plot(y, standres, col=ifelse(standres<(-2), "red", ifelse(standres>2, "red", "black")),
+     main="Standardized Residual Plot\nTransformed X and Y Full Model",
+     xlab="Fitted values",	ylab="Standardized residuals",	pch=16, cex=1)
+abline(h=0); abline(h=2); abline(h=-2)
+```
+
+Looking at the Q-Q plot, the data curves away from the plotted Q-Q line at the tails drastically, suggesting that the distribution of the residuals is not normal.
+```{r transform x qq, echo=FALSE, fig.align="center", fig.height=3.22, fig.width=4.25}
+qqnorm(transX_full$residuals,	main="Normal Q-Q Plot Transformed X and Y Full Model",
+       pch=16, cex=1)
+qqline(transX_full$residuals)
+```
+
+We check this with the Shapiro-Wilk test. We reject the null hypothesis assuming a normal distribution and thus conclude that the residuals are not normally distributed.
+```{r transform x sw test}
+shapiro.test(transX_full$residuals)
+```
+
+The index plot shows generally random scatter throughout the plot, so the independence assumption should be met. We confirm this with the Durbin-Watson test. We fail to reject the null hypothesis and conclude there is no autocorrelation. Therefore the independence assumption is met.
+```{r transform x index plot, echo=FALSE, fig.height=3.22, fig.width=4.25, fig.align="center"}
+row <- row(data_2011_transX,as.factor=FALSE)
+plot(row[,1], transX_full$residuals, xlab="Index", ylab="Residuals",
+     main="Index Plot Transformed X and Y Full Model", pch=16, cex=1)
+abline(h=0)
+```
+
+```{r transform x dw test}
+dwtest(transX_full, data=data_2011_transX)
+```
+
+The model with the transformed X variables fails to meet the linearity, constant variance, and normality assumptions, and it had multiple outliers. Transforming the predictor variables only achieved a higher R^2 value. We will proceed with only transforming the response variable since the corresponding model met most of the assumptions.
+
+## Variable Selection
+
+To select the variables for our model, we will perform forward, backward, and bidirectional stepwise selection.
+
+First we perform forward selection starting from a null model with no predictor variables:
+```{r forward}
+null <- lm(CO2_kt.trans~1, data=data_2011_transY)
+forward_model <- step(null, data=data_2011_transY, list(upper=transY_full),
+                      direction="forward", trace=F)
+summary(forward_model); anova(forward_model)
+```
+
+This gives the following model: CO2_kt.trans = 3.886 - 0.0000142(Methane) + 0.08686(Elec_Access) + 0.00008799(GDP) + 0.05803(Agr_Land) + 0.000002289(Forest_Area) + 0.00000001856(Pop) + 0.1483(Energy_Intens) + 0.00003538(NOXE). Next, we try backward selection and bidirectional selection from a general linear model:
+
+```{r backward}
+backward_model <- step(transY_full,direction="backward",trace=F)
+summary(backward_model); anova(backward_model)
+```
+
+```{r bidirectional}
+stepwise_model <- step(transY_full,direction="both",trace=F)
+summary(stepwise_model); anova(stepwise_model)
+```
+
+Backward and bidirectional selection give the same model as the forward selection model, so we choose this as our final model. Next, we will check the model assumptions for our final model.
+
+## Final Model Assumptions
+
+```{r final model residual plot, echo=FALSE, fig.height=3.5, fig.width=4.5, fig.align="center"}
+model <- stepwise_model
+plot(model$fitted.values,	model$residuals, main="Residual Plot Final Model",
+     xlab="Fitted values", ylab="Residuals", pch=16, cex=1)
+abline(h=0)
+```
+
+The residuals appear to have some scatter along the y=0 line, so the model could possibly be linear. However there is a clear fanning then funneling effect in the spread of the residuals, suggesting nonconstant variance. There may be some outliers, as there are a couple extreme values in the residuals between fitted values of 15-20 kt.
+
+```{r final model bp test}
+model <- stepwise_model
+bptest(model, studentize=FALSE)
+```
+
+The Breusch-Pagan test gives a small p-value, so we reject the null hypothesis of constant residual variance and conclude that the variance of the residuals is indeed not constant, suporting the residual plot above.
+
+```{r final model outliers, echo=FALSE, fig.height=3.22, fig.width=4.25, fig.align="center"}
+standres = rstandard(model)
+y <- model$fitted.values
+plot(y, standres, col=ifelse(standres<(-2), "red", ifelse(standres>2, "red", "black")),
+     main="Standardized Residual Plot Final Model",
+     xlab="Fitted values", ylab="Standardized residuals", pch=16, cex=1)
+abline(h=0); abline(h=2); abline(h=-2)
+```
+
+The standardized residual plot shows that there are some outliers in the residuals, shown in red. Most of them are from overfitted values in the observations. With further investigation, these outliers could potentially be removed from the data.
+
+```{r final model qq, echo=FALSE, fig.height=3.22, fig.width=4.25, fig.align="center"}
+qqnorm(model$residuals,	main="Normal Q-Q Plot Final Model",	pch=16, cex=1)
+qqline(model$residuals)
+```
+
+In the Q-Q plot, the residuals follow the Q-Q line fairly well. Although the deviate more at the ends of the line, they do not stray too much and completely off the Q-Q line. Thus, thresiduals of the model seem to follow a normal distribution. We confirm this with the Shapiro-Wilk test:
+
+```{r final model sw test}
+shapiro.test(model$residuals)
+```
+
+The test yields a large p-value, so we fail to reject our null hypothesis that the residuals follow a normal distribution. Thus we can conclude a normal distribution is valid. Below, we look at the tests for the assumption of indepenedence in the residuals.
+
+```{r final model index plot, echo=FALSE, fig.height=3.22, fig.width=4.25, fig.align="center"}
+row <- row(data_2011_transY,as.factor=FALSE)
+plot(row[,1], model$residuals, xlab="Index", ylab="Residuals", main="Index Plot Final Model",
+     pch=16, cex=1)
+abline(h=0)
+```
+
+The index plot of the residuals shows a random scatter throughout the entire lot, so the assumption of independence should be met. We confirm this with the Durbin-Watson test below:
+
+```{r final model dw test}
+dwtest(model, data=data_2011_transY)
+```
+
+The test gives a large p-value. Therefore, we fail to reject our null hypothesis that the true autocorrelation between the residuals is 0. Thus, we can assume independence among the residuals.
+
+Our final model met all assumptions aside from nonconstant variance and potentially linearity. There are a few outliers, but we choose to move forward with this model since it does satisfy most of the assumptions and relatively more compared to other models we have tested.
+
+## Conclusion
+
+Our final model is CO2_kt.trans = 3.886 - 0.0000142(Methane) + 0.08686(Elec_Access) + 0.00008799(GDP) + 0.05803(Agr_Land) + 0.000002289(Forest_Area) + 0.00000001856(Pop) + 0.1483(Energy_Intens) + 0.00003538(NOXE). The model includes 8 of the original 9 covariates we selected, eliminating Greenhouse (other greenhouse gas byproduct emissions). Our model has an R-squared value of 0.605 and an adjusted R-squared value of 0.5849, which gives it a moderate ability of predicting cabon dioxide emissions from fossil fuel burning and cement manufacturing. The inconclusiveness of the data (missing values) severly hindered the ability to determine which variables to include in the pool of potential predictors for a model. In general, we found that indicators related to the environment and economics of a country in particular were crucial to our model, such as forest area, agricultural land, energy intensity level, and access to electricity. Similar future studies should take such factors under special consideration, especially in researching where to focus efforts for developing solutions and policies to reduce carbon emissions. We also transformed our data to meet some of the assumptions for a linear model. This hints at the complexities of relationships between factors relating to development and climate. It would be helpful to explore the full range of transformations possible for the response and predictor variables in the future, and if possible, nonlinear models as well. This way the true relationships between the variables of interest may be captured even more accurately.
+
+## Appendix
+
+More information on data set variables:
+
+- **CO2_kt (dependent variable)** - **Carbon dioxide emissions (kilotons) stemming from burning fossil fuels and manufacturing cement.** This includes carbon dioxide produced during the consumption of solid, liquid, and gas fuels as well as gas flaring.
+- **GDP** - **GDP per capita based on purchasing power parity (PPP GDP).** PPP GDP is gross domestic product converted to international dollars using purchasing power parity rates. An international dollar has the same purchasing power over GDP as the U.S. dollar has in the United States. GDP at purchaser's prices is the sum of gross value added by all resident producers in the economy plus any product taxes and minus any subsidies not included in the value of the products. It is calculated without making deductions for depreciation of fabricated assets or for depletion and degradation of natural resources. Data are in constant 2011 international dollars.
+- **Energy_Intens** - **Energy intensity level of primary energy is the ratio between energy supply and gross domestic product measured at purchasing power parity.** Energy intensity is an indication of how much energy is used to produce one unit of economic output. Lower ratio indicates that less energy is used to produce one unit of output.
+- **Elec_Access** - **Access to electricity is the percentage of population with access to electricity.** Electrification data are collected from industry, national surveys and international sources.
+- **Agr_Land** - **Agricultural land refers to the share of land area that is arable, under permanent crops, and under permanent pastures.** Arable land includes land defined by the FAO as land under temporary crops (double-cropped areas are counted once), temporary meadows for mowing or for pasture, land under market or kitchen gardens, and land temporarily fallow. Land abandoned as a result of shifting cultivation is excluded. Land under permanent crops is land cultivated with crops that occupy the land for long periods and need not be replanted after each harvest, such as cocoa, coffee, and rubber. This category includes land under flowering shrubs, fruit trees, nut trees, and vines, but excludes land under trees grown for wood or timber. Permanent pasture is land used for five or more years for forage, including natural and cultivated crops.
+- **Pop** - **Total population** is based on the de facto definition of population, which counts all residents regardless of legal status or citizenship. The values are midyear estimates.
+- **Methane** - **Methane emissions are those stemming from human activities such as agriculture and from industrial methane production.**
+- **NOXE** - **Nitrous oxide emissions are emissions from agricultural biomass burning, industrial activities, and livestock management.**
+- **Greenhouse** - **Other greenhouse gas emissions are by-product emissions of hydrofluorocarbons, perfluorocarbons, and sulfur hexafluoride.**
+- **Forest_Area** - **Forest area is land under natural or planted stands of trees of at least 5 meters in situ,** whether productive or not, and excludes tree stands in agricultural production systems (e.g. in fruit plantations and agroforestry systems) and trees in urban parks and gardens.
